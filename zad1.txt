@@ -1,0 +1,164 @@
+Zadanie 1
+=========
+
+Loader plików .o
+----------------
+
+1. Wprowadzenie
+
+    Używając linkera dynamicznego (dlopen/dlsym) można łatwo załadować
+    biblioteki dynamiczne (.so) do działającego procesu. Nie istnieje jednak
+    podobna możliwość dla plików .o: wymagają one uprzedniego połączenia przez
+    linker. Co więcej, biblioteki dynamiczne są zoptymalizowane na przypadek
+    kodu współdzielonego przez wiele procesów, kosztem wydajności i zużycia
+    pamięci w pojedynczym procesie (głównie przez PIC). Łatwo wyobrazić sobie
+    sytuacje, w których nie jest to właściwe podejście:
+    
+     - różne sytuacje "embedded", w których istnieje tylko jeden proces (który
+       pewnie i tak nie ma zwykłego linkera dynamicznego): np. jądro systemu
+       operacyjnego, urządzenia wbudowane, modularny bootloader
+     - kod produkowany w wyniku kompilacji JIT przez sam proces
+    
+    Zadanie polega na napisaniu lekkiej biblioteki pozwalającej na ładowanie
+    modułów w formacie ELF ET_REL (czyli .o) do działającego procesu
+    i korzystanie z nich.
+
+2. Interfejs biblioteki
+
+    Interfejs biblioteki jest ustalony i zadeklarowny w pliku nagłówkowym
+    loader.h. Składają się na niego następujące elementy:
+
+    - struktura reprezentująca załadowany moduł:
+
+        struct module;
+
+      Plik nagłówkowy zawiera jedynie deklarację tej struktury - jej pola
+      nie stanowią części interfejsu i nie będą widoczne dla aplikacji.
+
+    - typ funkcji obsługującej odwołania zewnętrzne:
+
+	typedef void *(*getsym_t) (void *arg, const char *name),
+
+      Funkcja do obsługi odwołań zewnętrznych jest dostarczana przez
+      użytkownika przy ładowaniu modułu i jest wykonywana (w czasie ładowania
+      modułu) dla każdego symbolu, którego moduł używa ale nie definiuje.
+      Pierwszy argument do tej funkcji jest wybierany przez użytkownika
+      (przy wywołaniu module_load) i może być przez niego użyty np. do
+      identyfikacji modułu, który prosi o znalezienie symbolu. Drugi argument
+      do tej funkcji to nazwa potrzebnego symbolu. Funkcja powinna zwrócić
+      adres poszukiwanego symbolu, lub NULL gdy nie udało się go znaleźć
+      (wtedy ładowanie modułu spowoduje błąd).
+
+    - funkcja ładująca moduł:
+
+	struct module *module_load(
+			const char *filename,
+			getsym_t getsym_fun,
+			void *getsym_arg);
+
+      Pierwszy parametr tej funkcji jest nazwą pliku zawierającego moduł
+      do załadowania. Drugi parametr określa funkcję obsługjącą odwołania
+      zewnętrzne, a trzeci parametr określa jej dodadkowy argument.
+      Jeśli ładowanie modułu powiedzie się, funkcja ma zwrócić niezerowy
+      wskaźnik, którego będzie można użyć z funkcjami module_getsym
+      i module_unload. Jeśli ładowanie modułu nie powiedzie się
+      z jakiejkolwiek przyczyny (brak pliku, błędny format, zła architektura,
+      nieobsługiwany feature ELFa, niezdefiniowany symbol, itp.), funkcja
+      ma zwrócić NULL.
+
+    - funkcja znajdująca symbol w module:
+
+	void *module_getsym(struct module *mod, const char *name);
+
+      Jeśli moduł mod definiuje globalny symbol o podanej nazwie, funkcja
+      ma zwrócić jego adres. W przeciwnym przypadku, funkcja ma zwrócić
+      NULL.
+
+    - funkcja usuwająca moduł:
+
+	void module_unload(struct module *mod);
+
+      Ta funkcja ma usunąć wszystkie dane modułu z pamięci. Zakładamy,
+      że użytkownik nie będzie już w żaden sposób używać modułu (tzn.
+      adresy zwracane przez module_getsym przestają być poprawne).
+
+3. Format modułów
+
+    Moduły są plikami ELF typu ET_REL na platformę i386. Przyjmujemy
+    następujące założenia:
+    
+     - jedyne flagi sekcji, które trzeba obsłużyć to SHF_ALLOC, SHF_WRITE,
+       SHF_EXECINSTR. Pozostałe flagi można ignorować. Sekcje bez SHF_ALLOC
+       nie powinna zajmować pamięci po załadowaniu. SHF_WRITE i SHF_EXECINSTR
+       powinny być obsługiwane zgodnie ze specyfikacją: sekcja bez SHF_WRITE
+       ma nie mieć praw do zapisu po załadowaniu (analogicznie dla
+       SHF_EXECINSTR, na tyle na ile system na to pozwala).
+     - typy sekcji, które trzeba obsłużyć to: SHT_PROGBITS, SHT_SYMTAB,
+       SHT_STRTAB, SHT_REL, SHT_NOBITS. Sekcje pozostałych typów należy
+       traktować tak, jakby były to sekcj SHT_PROGBITS. Ponadto, można
+       założyć, że będzie istniała dokładnie jedna sekcja SHT_SYMTAB.
+     - typy symboli, które trzeba obsłużyć to: STT_NOTYPE, STT_OBJECT,
+       STT_FUNC. Pozostałe symbole można ignorować.
+     - typy wiązania symboli, jakie należy obsłużyć to STB_LOCAL i STB_GLOBAL.
+       Jeśli pojawią się inne, należy je traktować jako STB_GLOBAL. Symbole
+       STB_LOCAL nie powinny być uwzględniane przez module_getsym.
+     - nie przejmujamy się widocznością symboli (STV_*)
+     - zakładamy, że symbol jest albo zdefiniowany w prawdziwej sekcji,
+       albo niezdefiniowany (SHN_UNDEF) - symbole w pozostałych specjalnych
+       sekcjach (SHN_*) należy zignorować
+     - jedyne typy relokacji, które trzeba obsłużyć to R_386_32 i R_386_PC32.
+       Jeśli moduł używa innego typu relokacji, lub gdy symbol używany przez
+       relokację nie jest obsługiwany (np. ma dziwny typ lub specjalną sekcję),
+       funkcja ładująca moduł ma zwrócić błąd.
+
+4. Proces ładowania modułów
+
+    Proces ładowania modułów ma przebiegać następująco:
+
+     - plik modułu jest otwierany
+     - wczytywane są nagłówki ELFa i sekcji
+     - wszystkie sekcje z SHF_ALLOC są wczytywane i umieszczane w obszarach
+       pamięci o (docelowo) odpowiednich uprawnieniach (na razie oczywiście
+       potrzebne jest prawo zapisu)
+     - tabela symboli (SHT_SYMTAB) jest wczytywana, wraz z towarzyszącą
+       sekcją SHT_STRTAB
+     - wszystkie sekcje typu SHT_REL dotyczące sekcji z SHF_ALLOC są
+       wczytywane i przetwarzane. Relokacje dotyczące symboli zdefiniowanych
+       w module są obsługiwane bezpośrednio, a relokacje dotyczące symboli
+       niezdefiniowanych powodują wywołanie przekazanej przez użytkownika
+       funkcj getsym()
+     - uprawnienia obszarów pamięci dla wszystkich sekcji są odpowiednio
+       ustawiane
+     - niepotrzebne już dane (np. tablice relokacji) są zwalniane
+
+    Błąd na dowolnym etapie tego procesu powinien spowodować odwrócenie
+    wszystkich wykonanych już czynności i zwrócenie NULLa. module_unload
+    również powinno w całości odwracać module_load.
+
+5. Forma rozwiązania
+
+    Jako rozwiązanie należy dostarczyć paczkę zawierającą:
+
+     - niezmodyfikowany plik loader.h
+     - dowolną ilość plików źródłowych z kodem rozwiązania
+     - plik Makefile kompilujący rozwiązanie, lub odpowiadający plik z innego
+       sensownego systemu budowania (np. cmake)
+     - plik readme z krótkim opisem rozwiązania
+
+    Kod rozwiązania powinien być napisany w całości w C (ew. C++) bez użycia
+    zewnętrznych bibliotek (można użyć elf.h z glibc). Rozwiązanie powinno
+    kompilować się do biblioteki libloader.so i nie eksportować na zewnątrz
+    żadnych symboli poza module_* wymienionymi w interfejsie.
+
+6. Wskazówki
+
+    - użyć mmap i mprotect, aby uzyskać pamięć o potrzebnych prawach dostępu
+
+7. Pytania i odpowiedzi
+
+    Pytania należy wysyłać na adres m.koscielnicki@mimuw.edu.pl, odpowiedzi
+    (wiążące) będą zamieszczane w pliku faq.txt obok zadania.
+
+==========================================================================
+Marcin Kościelnicki (m.koscielnicki@mimuw.edu.pl)
+10.03.2013
