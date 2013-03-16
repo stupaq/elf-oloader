@@ -1,4 +1,4 @@
-all: testaddsub testhello testvar
+all: testaddsub testhello testvar testmissing
 
 %.o: %.c hello.h
 	gcc -m32 -o $@ -c $<
@@ -12,10 +12,14 @@ testhello: testhello.o hello.o
 testvar: testvar.o var.o
 	gcc -m32 -o testvar testvar.o libloader.so
 
+testmissing: testmissing.o
+	gcc -m32 -o testmissing testmissing.o libloader.so
+
 test: all
 	./testaddsub
 	./testhello
 	./testvar
+	./testmissing
 
 clean:
-	rm -f *.o testaddsub testhello testvar
+	rm -f *.o testaddsub testhello testvar testmissing

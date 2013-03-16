@@ -10,7 +10,7 @@
 
 #include "loader.h"
 
-#define DEBUG
+//#define DEBUG
 
 #define CATCH catch__
 #ifdef DEBUG
