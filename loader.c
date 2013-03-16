@@ -10,8 +10,14 @@
 
 #include "loader.h"
 
+#define DEBUG
+
 #define CATCH catch__
+#ifdef DEBUG
 #define THROW(code) {fprintf(stderr, #code"; on line %d;\n", __LINE__); goto CATCH;}
+#else
+#define THROW(code) {goto CATCH;}
+#endif
 #define TRY_SYS(code) if ((code) < 0) THROW(code)
 #define TRY_PTR(code) if (!(code)) THROW(code)
 #define TRY_TRUE(code) if (!(code)) THROW(code)
@@ -22,7 +28,10 @@ struct section {
   size_t mmap_length;
   int mmap_prot;
   uintptr_t addr;
+  size_t size;
 };
+
+typedef Elf32_Sym symbol_t;
 
 struct module {
   size_t sections_sz;
@@ -30,7 +39,7 @@ struct module {
   size_t strings_sz;
   char *strings;
   size_t symbols_sz;
-  Elf32_Sym *symbols;
+  symbol_t *symbols;
 };
 
 uint32_t addr_align(uint32_t addr, uint32_t align) {
@@ -38,8 +47,12 @@ uint32_t addr_align(uint32_t addr, uint32_t align) {
   return (align > 0) ? (addr + align - 1) & (~(align - 1)) : addr;
 }
 
+int is_allocated(struct section *section) {
+  return section->mmap_length > 0;
+}
+
 int alloc_section(struct section *section, const Elf32_Shdr *elf_shdr) {
-  assert(section->mmap_length == 0);
+  assert(!is_allocated(section));
 
   if (elf_shdr->sh_addr == 0) {
     size_t align = (elf_shdr->sh_addralign > 1) ? elf_shdr->sh_addralign : 0;
@@ -53,6 +66,7 @@ int alloc_section(struct section *section, const Elf32_Shdr *elf_shdr) {
             -1, 0)) != (uintptr_t) MAP_FAILED);
 
     section->addr = addr_align(section->mmap_start, align);
+    section->size = elf_shdr->sh_size;
   } else {
     // TODO
     assert(0);
@@ -63,6 +77,8 @@ int alloc_section(struct section *section, const Elf32_Shdr *elf_shdr) {
     section->mmap_prot |= PROT_EXEC;
   if (elf_shdr->sh_flags & SHF_WRITE)
     section->mmap_prot |= PROT_WRITE;
+
+  assert(is_allocated(section));
   return 0;
 CATCH:
   section->mmap_length = 0;
@@ -70,10 +86,10 @@ CATCH:
 }
 
 int dealloc_section(struct section *section) {
-  if (section->mmap_length == 0)
+  if (is_allocated(section)) {
+    TRY_SYS(munmap((void *) section->mmap_start, section->mmap_length));
     return 0;
-  TRY_SYS(munmap((void *) section->mmap_start, section->mmap_length));
-  return 0;
+  }
 CATCH:
   return -1;
 }
@@ -86,12 +102,16 @@ int read_symbol_table(struct module *mod, Elf32_Shdr *elf_shdr, FILE* elf_file) 
   // Assuming there is only one symbols table
   TRY_TRUE(fseek(elf_file, elf_shdr->sh_offset, SEEK_SET) == 0);
   mod->symbols_sz = elf_shdr->sh_size / elf_shdr->sh_entsize;
-  TRY_PTR(mod->symbols = malloc(mod->symbols_sz * sizeof(Elf32_Sym)));
-  TRY_TRUE(fread(mod->symbols, sizeof(Elf32_Sym), mod->symbols_sz,
+  // We read symbols as Elf32_Sym but we store them internally as symbol_t
+  // Elf32_Sym is known only to loading code
+  TRY_TRUE(sizeof(Elf32_Sym) == sizeof(symbol_t));
+  TRY_PTR(mod->symbols = malloc(mod->symbols_sz * sizeof(symbol_t)));
+  TRY_TRUE(fread(mod->symbols, sizeof(symbol_t), mod->symbols_sz,
         elf_file) == mod->symbols_sz);
   return 0;
 CATCH:
   free(mod->symbols);
+  mod->symbols = NULL;
   return -1;
 }
 
@@ -109,6 +129,7 @@ int read_string_table(struct module *mod, Elf32_Shdr *elf_shdr, FILE* elf_file) 
   return 0;
 CATCH:
   free(mod->strings);
+  mod->strings = NULL;
   return -1;
 }
 
@@ -116,12 +137,14 @@ CATCH:
 #define ST_OBJECT (1 << STT_OBJECT)
 #define ST_FUNC (1 << STT_FUNC)
 #define ST_SECTION (1 << STT_SECTION)
+#define ST_ANY_ALLOWED (ST_NOTYPE | ST_OBJECT | ST_FUNC | ST_SECTION)
 
-#define INFO_TO_ST(info) \
+#define SYM_ST_INFO(info) \
   ((uint32_t) (1 << ELF32_ST_TYPE(symbol->st_info)))
-
-#define IS_SPECIAL_SHNDX(shndx) \
-  ((shndx) == SHN_UNDEF || (SHN_LORESERVE <= (shndx) && (shndx) <= SHN_HIRESERVE))
+#define IS_RES_SHNDX(shndx) \
+  (SHN_LORESERVE <= (shndx))
+#define IS_VALID_SHNDX(shndx) \
+  ((shndx) != SHN_UNDEF && !IS_RES_SHNDX(shndx))
 
 // TODO handle shndx >= SHN_LORESERVE
 #define SECTION_HEADER_IDX(shndx) \
@@ -137,12 +160,15 @@ CATCH:
 }
 
 char *get_string(struct module *mod, const size_t name) {
+  TRY_TRUE(name < mod->strings_sz);
   return mod->strings + name;
+CATCH:
+  return NULL;
 }
 
-uintptr_t get_symbol_addr(struct module *mod, const Elf32_Sym *symbol, const uint32_t type) {
+uintptr_t get_symbol_addr(struct module *mod, const symbol_t *symbol, const uint32_t type) {
   // We skip symbols from special sections and those of not matching type
-  if (!IS_SPECIAL_SHNDX(symbol->st_shndx) && (INFO_TO_ST(symbol->st_info) & type)) {
+  if (IS_VALID_SHNDX(symbol->st_shndx) && (SYM_ST_INFO(symbol->st_info) & type)) {
     struct section *section;
     TRY_PTR(section = get_section(mod, symbol->st_shndx));
     return section->addr + symbol->st_value;
@@ -153,9 +179,8 @@ CATCH:
 
 uintptr_t find_symbol(struct module *mod, const char *name, const uint32_t type) {
   for (size_t idx = 0; idx < mod->symbols_sz; idx++) {
-    Elf32_Sym *symbol = mod->symbols + idx;
+    symbol_t *symbol = mod->symbols + idx;
     char *sym_name = get_string(mod, symbol->st_name);
-    // We skip symbols from special sections and those of not matching type
     if (strcmp(name, sym_name) == 0) {
       return get_symbol_addr(mod, symbol, type);
     }
@@ -166,16 +191,27 @@ uintptr_t find_symbol(struct module *mod, const char *name, const uint32_t type)
 int do_relocation(struct module *mod, struct section *dest_section,
     const Elf32_Rel *relocation, getsym_t getsym_fun, void *getsym_arg ) {
   size_t symbol_idx = ELF32_R_SYM(relocation->r_info);
-  Elf32_Sym *symbol = mod->symbols + symbol_idx;
-  // TODO what to do with other symbols and relocation tables
-  if (INFO_TO_ST(symbol->st_info) & (ST_NOTYPE | ST_OBJECT | ST_FUNC | ST_SECTION)) {
+  symbol_t *symbol = mod->symbols + symbol_idx;
+  TRY_TRUE(!IS_RES_SHNDX(symbol->st_shndx));
+#ifdef DEBUG
+  fprintf(stderr, "%u -> %s shndx: %u type: %u\n",
+      symbol_idx,
+      get_string(mod, symbol->st_name),
+      symbol->st_shndx,
+      ELF32_ST_TYPE(symbol->st_info));
+#endif
+  if ((SYM_ST_INFO(symbol->st_info) & ST_ANY_ALLOWED)) {
     uint32_t symbol_addr = 0;
     if (symbol->st_shndx == SHN_UNDEF) {
       symbol_addr = (uint32_t) getsym_fun(getsym_arg, get_string(mod, symbol->st_name));
     } else {
-      symbol_addr = (uint32_t) get_symbol_addr(mod, symbol, (ST_NOTYPE | ST_OBJECT | ST_FUNC | ST_SECTION));
+      struct section *section;
+      TRY_PTR(section = get_section(mod, symbol->st_shndx));
+      TRY_TRUE(is_allocated(section));
+      TRY_TRUE(symbol->st_value < section->size);
+      symbol_addr = (uint32_t) (section->addr + symbol->st_value);
     }
-    TRY_TRUE(symbol_addr != 0); // TODO
+
     uint32_t *destination = (uint32_t *) (dest_section->addr + relocation->r_offset);
     switch (ELF32_R_TYPE(relocation->r_info)) {
       case R_386_32:
@@ -261,7 +297,7 @@ struct module *module_load(const char *filename, getsym_t getsym_fun,
         global_sym_idx = shdr->sh_info;
         // Field sh_link contains section header index of associated string table
         size_t str_idx = SECTION_HEADER_IDX(shdr->sh_link);
-        TRY_TRUE(!IS_SPECIAL_SHNDX(str_idx) && str_idx < elf_header.e_shnum);
+        TRY_TRUE(IS_VALID_SHNDX(str_idx) && str_idx < elf_header.e_shnum);
         TRY_SYS(read_string_table(mod, section_headers + str_idx, elf_file));
         break;
       case SHT_NOBITS:
@@ -308,15 +344,15 @@ struct module *module_load(const char *filename, getsym_t getsym_fun,
   TRY_TRUE(global_sym_idx < mod->symbols_sz);
   mod->symbols_sz -= global_sym_idx;
   memmove(mod->symbols, mod->symbols + global_sym_idx,
-      mod->symbols_sz * sizeof(Elf32_Sym));
+      mod->symbols_sz * sizeof(symbol_t));
   TRY_PTR(mod->symbols = realloc(mod->symbols,
-        mod->symbols_sz * sizeof(Elf32_Sym)));
+        mod->symbols_sz * sizeof(symbol_t)));
 
   // Set-up sections protection
   for (size_t idx = 0; idx < elf_header.e_shnum; idx++) {
     struct section *section;
     TRY_PTR(section = get_section(mod, idx));
-    if (section->mmap_length) {
+    if (is_allocated(section)) {
       TRY_SYS(mprotect((void *) section->mmap_start, section->mmap_length,
             section->mmap_prot));
     }
@@ -327,7 +363,9 @@ struct module *module_load(const char *filename, getsym_t getsym_fun,
   return mod;
 CATCH:
   free(section_headers);
-  fclose(elf_file);
+  if (elf_file) {
+    fclose(elf_file);
+  }
   module_unload(mod);
   return NULL;
 }
