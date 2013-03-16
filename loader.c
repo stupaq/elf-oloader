@@ -42,9 +42,14 @@ struct module {
   symbol_t *symbols;
 };
 
-uint32_t addr_align(uint32_t addr, uint32_t align) {
+uint32_t addr_align_up(uint32_t addr, uint32_t align) {
   assert((align & (align - 1)) == 0);
   return (align > 0) ? (addr + align - 1) & (~(align - 1)) : addr;
+}
+
+uint32_t addr_align_down(uint32_t addr, uint32_t align) {
+  assert((align & (align - 1)) == 0);
+  return (align > 0) ? addr & (~(align - 1)) : addr;
 }
 
 int is_allocated(struct section *section) {
@@ -65,12 +70,27 @@ int alloc_section(struct section *section, const Elf32_Shdr *elf_shdr) {
             MAP_PRIVATE | MAP_ANONYMOUS,
             -1, 0)) != (uintptr_t) MAP_FAILED);
 
-    section->addr = addr_align(section->mmap_start, align);
+    section->addr = addr_align_up(section->mmap_start, align);
     section->size = elf_shdr->sh_size;
   } else {
-    // TODO
-    assert(0);
+    TRY_TRUE(elf_shdr->sh_addralign <= 1);
+    size_t align = getpagesize();
+    section->mmap_start = addr_align_down(elf_shdr->sh_addr, align);
+    section->mmap_length = elf_shdr->sh_size + align; // OPTIMIZE
+
+    TRY_TRUE(mmap(
+          (void *) section->mmap_start,
+          section->mmap_length,
+          PROT_READ | PROT_WRITE,
+          MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED,
+          -1, 0) != MAP_FAILED);
+
+    section->addr = elf_shdr->sh_addr;
+    section->size = elf_shdr->sh_size;
   }
+  TRY_TRUE(section->mmap_start <= section->addr);
+  TRY_TRUE(section->addr + section->size <=
+      section->mmap_start + section->mmap_length);
 
   section->mmap_prot = PROT_READ;
   if (elf_shdr->sh_flags & SHF_EXECINSTR)
