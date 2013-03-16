@@ -146,12 +146,6 @@ CATCH:
 #define IS_VALID_SHNDX(shndx) \
   ((shndx) != SHN_UNDEF && !IS_RES_SHNDX(shndx))
 
-// TODO handle shndx >= SHN_LORESERVE
-#define SECTION_HEADER_IDX(shndx) \
-  ((shndx) < SHN_LORESERVE ? (shndx) : \
-   ((shndx) <= SHN_HIRESERVE ? 0 : \
-    (shndx) - (SHN_HIRESERVE + 1 - SHN_LORESERVE)))
-
 struct section *get_section(struct module *mod, size_t shndx) {
   TRY_TRUE(shndx < mod->sections_sz);
   return mod->sections + shndx;
@@ -261,12 +255,9 @@ struct module *module_load(const char *filename, getsym_t getsym_fun,
   // (0xff00), e_shnum has the value SHN_UNDEF (0) and the actual number of
   // section header table entries is contained in the sh_size field of the
   // section header at index 0
-  if (elf_header.e_shnum == SHN_UNDEF) {
-    Elf32_Shdr section_header;
-    TRY_TRUE(fread(&section_header, elf_header.e_shentsize, 1, elf_file) == 1);
-    elf_header.e_shnum = section_header.sh_size;
-    TRY_TRUE(fseek(elf_file, elf_header.e_shoff, SEEK_SET) == 0);
-  }
+  // We do not handle this extension
+  TRY_TRUE(elf_header.e_shnum != SHN_UNDEF);
+  TRY_TRUE(elf_header.e_shnum < SHN_LORESERVE);
 
   TRY_PTR(section_headers = malloc(sizeof(Elf32_Shdr) * elf_header.e_shnum));
   TRY_TRUE(fread(section_headers, elf_header.e_shentsize, elf_header.e_shnum,
@@ -296,9 +287,8 @@ struct module *module_load(const char *filename, getsym_t getsym_fun,
         TRY_SYS(read_symbol_table(mod, shdr, elf_file));
         global_sym_idx = shdr->sh_info;
         // Field sh_link contains section header index of associated string table
-        size_t str_idx = SECTION_HEADER_IDX(shdr->sh_link);
-        TRY_TRUE(IS_VALID_SHNDX(str_idx) && str_idx < elf_header.e_shnum);
-        TRY_SYS(read_string_table(mod, section_headers + str_idx, elf_file));
+        TRY_TRUE(IS_VALID_SHNDX(shdr->sh_link) && shdr->sh_link < elf_header.e_shnum);
+        TRY_SYS(read_string_table(mod, section_headers + shdr->sh_link, elf_file));
         break;
       case SHT_NOBITS:
         if ((shdr->sh_flags & SHF_ALLOC) && shdr->sh_size > 0) {
