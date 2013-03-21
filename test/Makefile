@@ -1,25 +1,28 @@
-all: testaddsub testhello testvar testmissing
+CC          := gcc -m32
+CFLAGS      :=
+LDFLAGS     := libloader.so
 
-%.o: %.c hello.h
-	gcc -m32 -o $@ -c $<
+SOURCES     := $(wildcard *.c)
+DEPENDS     := $(subst .c,.d,$(SOURCES))
+OBJS				:= $(subst .c,.o,$(SOURCES))
+MAIN        := $(subst .c,,$(shell grep -l "int main" $(SOURCES)))
+TEST_NAME		:= test
 
-testaddsub: testaddsub.o addsub.o
-	gcc -m32 -o testaddsub testaddsub.o libloader.so
-
-testhello: testhello.o hello.o
-	gcc -m32 -o testhello testhello.o libloader.so
-
-testvar: testvar.o var.o
-	gcc -m32 -o testvar testvar.o libloader.so
-
-testmissing: testmissing.o
-	gcc -m32 -o testmissing testmissing.o libloader.so
+all: $(DEPENDS) $(MAIN) $(OBJS)
 
 test: all
-	./testaddsub
-	./testhello
-	./testvar
-	./testmissing
+	@$(foreach test, $(MAIN), echo ">>> "$(test); ./$(test);)
+
+$(DEPENDS) : %.d : %.c
+	$(CC) -MT $(<:.c=.o) -MM $< > $@
+	@echo -e "\t"$(CC) -c $(CFLAGS) $< -o $(<:.c=.o) >> $@
+
+$(MAIN) : % : %.o $(patsubst $(TEST_NAME)%, %.o, $@)
+	$(CC) $(LDFLAGS) -o $@ $^
+
+-include $(DEPENDS)
 
 clean:
-	rm -f *.o testaddsub testhello testvar testmissing
+	-rm -f $(DEPENDS) $(MAIN) $(OBJS)
+
+.PHONY: clean test
