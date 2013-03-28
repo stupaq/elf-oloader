@@ -304,7 +304,7 @@ struct module *module_load(const char *filename, getsym_t getsym_fun,
       case SHT_NOBITS:
         if ((shdr->sh_flags & SHF_ALLOC) && shdr->sh_size > 0) {
           TRY_SYS(section_alloc(section, shdr));
-          memset((void *) shdr->sh_addr, 0, shdr->sh_size);
+          memset((void *) section->addr, 0, shdr->sh_size);
         }
         break;
       case SHT_PROGBITS:
@@ -333,6 +333,7 @@ struct module *module_load(const char *filename, getsym_t getsym_fun,
 
       struct section *dest_section;
       TRY_PTR(dest_section = module_get_section(mod, shdr->sh_info));
+      TRY_TRUE(section_is_alloc(dest_section));
       for (size_t idx = 0; idx < rel_num; idx++) {
         Elf32_Rel relocation;
         TRY_TRUE(fread(&relocation, sizeof(Elf32_Rel), 1, elf_file) == 1);
