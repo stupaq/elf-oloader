@@ -11,11 +11,7 @@
 #include "loader.h"
 
 #define CATCH catch__
-#ifndef NDEBUG
-#define THROW(code) {fprintf(stderr, #code"; on line %d;\n", __LINE__); goto CATCH;}
-#else
-#define THROW(code) {goto CATCH;}
-#endif
+#define THROW(code) { goto CATCH; }
 #define TRY_SYS(code) if ((code) < 0) THROW(code)
 #define TRY_PTR(code) if (!(code)) THROW(code)
 #define TRY_TRUE(code) if (!(code)) THROW(code)
@@ -44,11 +40,6 @@ static int section_alloc(struct section *section, const Elf32_Shdr *elf_shdr) {
   TRY_TRUE(elf_shdr->sh_size > 0);
   TRY_TRUE(!section_is_alloc(section));
   // Ignore sh_addr value
-#ifndef NDEBUG
-  if (elf_shdr->sh_addr != 0) {
-    fprintf(stderr, "WARN: nonzero sh_addr");
-  }
-#endif
 
   size_t align = (elf_shdr->sh_addralign > 1) ? elf_shdr->sh_addralign : 0;
   size_t length = elf_shdr->sh_size + align; // OPTIMIZE
@@ -210,13 +201,6 @@ static int do_relocation(struct module *mod, struct section *dest_section,
   TRY_TRUE(symbol_idx < mod->symbols_sz);
   symbol_t *symbol = mod->symbols + symbol_idx;
   TRY_TRUE(!IS_RES_SHNDX(symbol->st_shndx));
-#ifndef NDEBUG
-  fprintf(stderr, "%u -> %s shndx: %u type: %u\n",
-      symbol_idx,
-      module_get_string(mod, symbol->st_name),
-      symbol->st_shndx,
-      ELF32_ST_TYPE(symbol->st_info));
-#endif
   if ((SYM_ST_INFO(symbol->st_info) & ST_ANY_ALLOWED)) {
     uint32_t symbol_addr = 0;
     if (symbol->st_shndx == SHN_UNDEF) {
