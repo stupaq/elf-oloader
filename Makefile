@@ -1,4 +1,4 @@
-CC          := gcc -m32 -Wall -Wextra -pedantic -std=gnu99
+CC          := gcc -m32 -Wall -Wextra -pedantic -std=gnu99 #-D NDEBUG
 CFLAGS      := -fPIC
 LDFLAGS     :=
 
