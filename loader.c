@@ -73,20 +73,8 @@ int alloc_section(struct section *section, const Elf32_Shdr *elf_shdr) {
     section->addr = addr_align_up(section->mmap_start, align);
     section->size = elf_shdr->sh_size;
   } else {
-    TRY_TRUE(elf_shdr->sh_addralign <= 1);
-    size_t align = getpagesize();
-    section->mmap_start = addr_align_down(elf_shdr->sh_addr, align);
-    section->mmap_length = elf_shdr->sh_size + align; // OPTIMIZE
-
-    TRY_TRUE(mmap(
-          (void *) section->mmap_start,
-          section->mmap_length,
-          PROT_READ | PROT_WRITE,
-          MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED,
-          -1, 0) != MAP_FAILED);
-
-    section->addr = elf_shdr->sh_addr;
-    section->size = elf_shdr->sh_size;
+    // Ignore sections with sh_addr != 0
+    return 0;
   }
   TRY_TRUE(section->mmap_start <= section->addr);
   TRY_TRUE(section->addr + section->size <=
@@ -115,6 +103,7 @@ CATCH:
 }
 
 int read_symbol_table(struct module *mod, Elf32_Shdr *elf_shdr, FILE* elf_file) {
+  TRY_TRUE(mod->symbols == NULL);
   TRY_TRUE(elf_shdr->sh_type == SHT_SYMTAB);
   TRY_TRUE(sizeof(Elf32_Sym) == elf_shdr->sh_entsize);
   size_t rem = elf_shdr->sh_size % elf_shdr->sh_entsize;
@@ -136,6 +125,7 @@ CATCH:
 }
 
 int read_string_table(struct module *mod, Elf32_Shdr *elf_shdr, FILE* elf_file) {
+  TRY_TRUE(mod->strings == NULL);
   TRY_TRUE(elf_shdr->sh_type == SHT_STRTAB);
   TRY_TRUE(elf_shdr->sh_size > 0);
   // Assuming there is only one symbols table (which implies only one
@@ -205,6 +195,7 @@ uintptr_t find_symbol(struct module *mod, const char *name, const uint32_t type)
 int do_relocation(struct module *mod, struct section *dest_section,
     const Elf32_Rel *relocation, getsym_t getsym_fun, void *getsym_arg ) {
   size_t symbol_idx = ELF32_R_SYM(relocation->r_info);
+  TRY_TRUE(symbol_idx < mod->symbols_sz);
   symbol_t *symbol = mod->symbols + symbol_idx;
   TRY_TRUE(!IS_RES_SHNDX(symbol->st_shndx));
 #ifdef DEBUG
