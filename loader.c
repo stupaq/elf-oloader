@@ -201,33 +201,35 @@ static int do_relocation(struct module *mod, struct section *dest_section,
   TRY_TRUE(symbol_idx < mod->symbols_sz);
   symbol_t *symbol = mod->symbols + symbol_idx;
   TRY_TRUE(!IS_RES_SHNDX(symbol->st_shndx));
-  if ((SYM_ST_INFO(symbol->st_info) & ST_ANY_ALLOWED)) {
-    uint32_t symbol_addr = 0;
-    if (symbol->st_shndx == SHN_UNDEF) {
-      const char *sym_name;
-      TRY_PTR(sym_name = module_get_string(mod, symbol->st_name));
-      symbol_addr = (uint32_t) getsym_fun(getsym_arg, sym_name);
-    } else {
-      struct section *section;
-      TRY_PTR(section = module_get_section(mod, symbol->st_shndx));
-      TRY_TRUE(section_is_alloc(section));
-      TRY_TRUE(symbol->st_value < section->size);
-      symbol_addr = (uint32_t) (section->addr + symbol->st_value);
+  TRY_TRUE(SYM_ST_INFO(symbol->st_info) & ST_ANY_ALLOWED);
+  uint32_t symbol_addr = 0;
+  if (symbol->st_shndx == SHN_UNDEF) {
+    const char *sym_name;
+    TRY_PTR(sym_name = module_get_string(mod, symbol->st_name));
+    symbol_addr = (uint32_t) getsym_fun(getsym_arg, sym_name);
+    TRY_PTR(symbol_addr);
+  } else {
+    struct section *section;
+    TRY_PTR(section = module_get_section(mod, symbol->st_shndx));
+    if (!section_is_alloc(section)) {
+      return 0;
     }
+    TRY_TRUE(symbol->st_value < section->size);
+    symbol_addr = (uint32_t) (section->addr + symbol->st_value);
+  }
 
-    uint32_t *destination = (uint32_t *)
-      (dest_section->addr + relocation->r_offset);
-    switch (ELF32_R_TYPE(relocation->r_info)) {
-      case R_386_32:
-        *destination = *destination + symbol_addr;
-        break;
-      case R_386_PC32:
-        *destination = *destination + symbol_addr - (uint32_t) destination;
-        break;
-      default:
-        // Unrecognized relocation type encountered
-        TRY_TRUE(0);
-    }
+  uint32_t *destination = (uint32_t *)
+    (dest_section->addr + relocation->r_offset);
+  switch (ELF32_R_TYPE(relocation->r_info)) {
+    case R_386_32:
+      *destination = *destination + symbol_addr;
+      break;
+    case R_386_PC32:
+      *destination = *destination + symbol_addr - (uint32_t) destination;
+      break;
+    default:
+      // Unrecognized relocation type encountered
+      TRY_TRUE(0);
   }
   return 0;
 CATCH:
