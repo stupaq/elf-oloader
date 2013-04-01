@@ -94,9 +94,12 @@ struct module {
 
 static void module_init(struct module *mod) {
   memset(mod, 0, sizeof(struct module));
+  mod->sections = NULL;
+  mod->strings = NULL;
+  mod->symbols = NULL;
 }
 
-static int module_read_symbols(struct module *mod, Elf32_Shdr *elf_shdr,
+static int module_read_symbols(struct module *mod, const Elf32_Shdr *elf_shdr,
     FILE* elf_file) {
   TRY_TRUE(mod->symbols == NULL);
   TRY_TRUE(elf_shdr->sh_type == SHT_SYMTAB);
@@ -119,7 +122,7 @@ CATCH:
   return -1;
 }
 
-static int module_read_strings(struct module *mod, Elf32_Shdr *elf_shdr,
+static int module_read_strings(struct module *mod, const Elf32_Shdr *elf_shdr,
     FILE* elf_file) {
   TRY_TRUE(mod->strings == NULL);
   TRY_TRUE(elf_shdr->sh_type == SHT_STRTAB);
@@ -249,7 +252,7 @@ struct module *module_load(const char *filename, getsym_t getsym_fun,
   TRY_PTR(elf_file = fopen(filename, "rb"));
 
   Elf32_Ehdr elf_header;
-  TRY_TRUE(fread(&elf_header, sizeof(elf_header), 1, elf_file) == 1);
+  TRY_TRUE(fread(&elf_header, sizeof(Elf32_Ehdr), 1, elf_file) == 1);
 
   TRY_TRUE(elf_header.e_ident[EI_MAG0] == ELFMAG0
       && elf_header.e_ident[EI_MAG1] == ELFMAG1
