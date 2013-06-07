@@ -217,7 +217,6 @@ static int do_relocation(struct module *mod, struct section *dest_section,
     if (!section_is_alloc(section)) {
       return 0;
     }
-    TRY_TRUE(symbol->st_value < section->size);
     symbol_addr = (uint32_t) (section->addr + symbol->st_value);
   }
 
@@ -338,12 +337,13 @@ struct module *module_load(const char *filename, getsym_t getsym_fun,
 
       struct section *dest_section;
       TRY_PTR(dest_section = module_get_section(mod, shdr->sh_info));
-      TRY_TRUE(section_is_alloc(dest_section));
-      for (size_t idx = 0; idx < rel_num; idx++) {
-        Elf32_Rel relocation;
-        TRY_TRUE(fread(&relocation, sizeof(Elf32_Rel), 1, elf_file) == 1);
-        TRY_SYS(do_relocation(mod, dest_section, &relocation, getsym_fun,
+      if (section_is_alloc(dest_section)) {
+        for (size_t idx = 0; idx < rel_num; idx++) {
+          Elf32_Rel relocation;
+          TRY_TRUE(fread(&relocation, sizeof(Elf32_Rel), 1, elf_file) == 1);
+          TRY_SYS(do_relocation(mod, dest_section, &relocation, getsym_fun,
               getsym_arg));
+        }
       }
     }
   }
